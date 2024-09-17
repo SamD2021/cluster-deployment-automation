@@ -100,11 +100,11 @@ def enable_acc_connectivity(node: NodeConfig) -> None:
             logger.error_and_exit("Failed to enable ACC connectivity")
 
     ipu_acc = host.RemoteHost(str(node.ip))
-    ipu_acc.ping()
-    ipu_acc.ssh_connect("root", "redhat")
-    ipu_acc.run("nmcli con mod enp0s1f0 ipv4.route-metric 0")
-    ipu_acc.run("ip route delete default via 192.168.0.1")  # remove imc default route to avoid conflict
-    logger.info(f"{node.name} connectivity established")
+    ipu_acc.wait_ping()
+    # ipu_acc.ssh_connect("root", "redhat")
+    # ipu_acc.run("nmcli con mod enp0s1f0 ipv4.route-metric 0")
+    # ipu_acc.run("ip route delete default via 192.168.0.1")  # remove imc default route to avoid conflict
+    # logger.info(f"{node.name} connectivity established")
     ensure_ipu_netdevs_available(node)
 
 
@@ -241,11 +241,11 @@ def IPUIsoBoot(cc: ClustersConfig, node: NodeConfig, iso: str) -> None:
         assert node.ip
         _pxeboot_marvell_dpu(node.name, node.node, node.mac, node.ip, iso)
     else:
+        assert node.ip is not None
+        configure_iso_network_port(cc.network_api_port, node.ip)
+        configure_dhcpd(node)
+        enable_acc_connectivity(node)
         _redfish_boot_ipu(cc, node, iso)
-    assert node.ip is not None
-    configure_iso_network_port(cc.network_api_port, node.ip)
-    configure_dhcpd(node)
-    enable_acc_connectivity(node)
 
 
 def main() -> None:
