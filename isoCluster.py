@@ -154,14 +154,17 @@ def _redfish_boot_ipu(cc: ClustersConfig, node: NodeConfig, iso: str) -> None:
         imc = host.Host(node.bmc)
         imc.ssh_connect(node.bmc_user, node.bmc_password)
         # TODO: Remove once https://issues.redhat.com/browse/RHEL-32696 is solved
-        logger.info("Waiting for 25m (workaround)")
-        time.sleep(25 * 60)
+        # logger.info("Waiting for 25m (workaround)")
+        # time.sleep(25 * 60)
+
+        ipu_acc = host.RemoteHost(str(node.ip))
+        ipu_acc.wait_ping()
         return f"Finished booting imc {node.bmc}"
 
-    # Ensure dhcpd is stopped before booting the IMC to avoid unintentionally setting the ACC hostname during the installation
-    # https://issues.redhat.com/browse/RHEL-32696
-    lh = host.LocalHost()
-    lh.run("systemctl stop dhcpd")
+    # # Ensure dhcpd is stopped before booting the IMC to avoid unintentionally setting the ACC hostname during the installation
+    # # https://issues.redhat.com/browse/RHEL-32696
+    # lh = host.LocalHost()
+    # lh.run("systemctl stop dhcpd")
 
     # If an http address is provided, we will boot from here.
     # Otherwise we will assume a local file has been provided and host it.
