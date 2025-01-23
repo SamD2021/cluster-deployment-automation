@@ -22,6 +22,24 @@ from collections.abc import Iterable
 from typing import Union
 import time
 import itertools
+import signal
+import types
+
+
+def with_timeout(timeout: int, func: Callable[[], None]) -> None:
+    def handler(signum: int, frame: Optional[types.FrameType]) -> None:
+        signum = signum
+        frame = frame
+        raise Exception(f"Timed out after {timeout}")
+
+    signal.signal(signal.SIGALRM, handler)
+    signal.alarm(timeout)
+    try:
+        return func()
+    except Exception as exc:
+        print(exc)
+    finally:
+        signal.alarm(0)
 
 
 T = TypeVar("T")
@@ -637,7 +655,7 @@ def wait_true(name: str, n_tries: int, func: Callable[..., bool], **func_kwargs:
     return True
 
 
-def wait_futures(msg: str, futures: list[tuple[str, Future[bool]]]) -> None:
+def wait_futures(msg: str, futures: list[tuple[str, Future[bool]]], cb: Callable[[], None] = lambda: None) -> None:
     def get_future_state(future: Future[bool]) -> str:
         if not future.done():
             return "Running"
@@ -661,7 +679,7 @@ def wait_futures(msg: str, futures: list[tuple[str, Future[bool]]]) -> None:
             break
 
         time.sleep(30)
+        cb()
 
-    failed = next((name for name, result in state.items() if not result), None)
-    if failed:
-        logger.error_and_exit(f"Failed to {msg} for {failed}....")
+    if any(not future.result() for (_, future) in futures):
+        logger.error_and_exit(f"Failed to {msg}: {state}")

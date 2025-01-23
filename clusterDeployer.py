@@ -347,7 +347,11 @@ class ClusterDeployer(BaseDeployer):
         self._ai.download_kubeconfig_and_secrets(self._cc.name, self._cc.kubeconfig)
 
         nodes_with_futures = [(n.config.name, executor.submit(n.ensure_reboot)) for n in master_nodes]
-        wait_futures("reboot node", nodes_with_futures)
+
+        def cb() -> None:
+            self._ai.check_any_host_error()
+
+        wait_futures("reboot node", nodes_with_futures, cb)
 
         self._ai.wait_cluster_status(cluster_name, "installed")
 
