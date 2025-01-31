@@ -5,6 +5,7 @@ import typing
 from logger import logger
 import dhcpConfig
 from clustersConfig import NodeConfig
+from bmc import BmcConfig
 from clusterNode import ClusterNode
 import host
 from bmc import BMC
@@ -58,9 +59,9 @@ class IPUClusterNode(ClusterNode):
         logger.info(f"Redfish boot triggered, attempting to connect to ACC at ip {self.config.ip}")
         # wait on install + reboot to complete
         acc = host.RemoteHost(self.config.ip)
-        # WA since we can't reliably expect the acc to get a dhcp lease due to https://issues.redhat.com/browse/IIC-427
-        self._wait_for_acc_with_retry(acc=acc)
-        # configure_iso_network_port(self.network_api_port, self.config.ip)
+        acc.ssh_connect("root", "redhat")
+        logger.info(acc.run("uname -a"))
+        logger.info("Connected to ACC")
 
     def _wait_for_acc_with_retry(self, acc: host.Host, timeout: int = 1200) -> None:
         # Typically if the acc booted properly it will take < 20 minutes to come up (including the 10 min sleep we do during boot)
@@ -77,8 +78,9 @@ class IPUClusterNode(ClusterNode):
                 if failures == 5:
                     logger.error_and_exit("Too many failures trying to get ACC up")
                 logger.info("ACC has not responded in a reasonable amount of time, rebooting IMC")
-                imc = host.RemoteHost(self.config.bmc)
-                imc.ssh_connect(self.config.bmc_user, self.config.bmc_password)
+                assert self.config.bmc is not None
+                imc = host.RemoteHost(self.config.bmc.url)
+                imc.ssh_connect(self.config.bmc.user, self.config.bmc.password)
                 imc.run("reboot")
                 timeout = 240
 
@@ -87,6 +89,7 @@ class IPUClusterNode(ClusterNode):
         logger.info("Connected to ACC")
 
     def start(self, iso_or_image_path: str) -> bool:
+        assert self.config.bmc is not None
         ipu_bmc = IPUBMC(self.config.bmc)
         if ipu_bmc.version() != "1.8.0":
             logger.error_and_exit(f"Unexpected version {ipu_bmc.version()}, should be 1.8.0")
@@ -98,7 +101,8 @@ class IPUClusterNode(ClusterNode):
 
     def _redfish_boot_ipu(self, external_port: str, node: NodeConfig, iso: str) -> None:
         def helper(node: NodeConfig, iso_address: str) -> str:
-            logger.info(f"Booting {node.bmc} with {iso_address}")
+            assert node.bmc is not None
+            logger.info(f"Booting {node.bmc.url} with {iso_address}")
             bmc = IPUBMC(node.bmc)
             bmc.boot_iso_with_redfish(iso_path=iso_address)
             return "Boot command sent"
@@ -129,23 +133,14 @@ class IPUClusterNode(ClusterNode):
         self._wait_for_acc_with_retry(acc=acc, timeout=300)
         return True
 
-    def _ipu_host(self) -> host.Host:
-        def host_from_imc(imc: str) -> str:
-            ipu_host = imc.split('-intel-ipu-imc')[0]
-            return ipu_host
-
-        node = self.config
-        ipu_host_name = host_from_imc(node.bmc)
-        ipu_host_url = f"{ipu_host_name}-drac.anl.eng.bos2.dc.redhat.com"
-        ipu_host_bmc = BMC.from_bmc(ipu_host_url, "root", "calvin")
-        return host.Host(ipu_host_name, ipu_host_bmc)
-
 
 class IPUBMC(BMC):
-    def __init__(self, full_url: str, user: str = "root", password: str = "calvin"):
-        if password == "calvin":
+    def __init__(self, bmc_config: BmcConfig):
+        if bmc_config.password == "calvin":
             password = "calvincalvincalvin"
-        super().__init__(full_url, user, password)
+        else:
+            password = bmc_config.password
+        super().__init__(bmc_config.url, bmc_config.user, password)
 
     def _restart_redfish(self) -> None:
         rh = host.RemoteHost(self.url)
@@ -178,24 +173,6 @@ rm -rf /home/root/MtRemoteRunner # workaround to free up some space: https://iss
 update-ca-trust
 sleep 10 # wait for ip address so that redfish starts with that in place
 systemctl restart redfish
-#  workaround to ensure acc has connectivity https://issues.redhat.com/browse/IIC-266
-nohup sh -c '
-    while true; do
-        if [ -f /work/scripts/ipu_port1_setup.sh ]; then
-            count=0
-            while [ $count -lt 20 ]; do
-                /work/scripts/ipu_port1_setup.sh
-                count=$((count + 1))
-                sleep $count
-            done
-            break
-        else
-            break
-        fi
-    done
-' &
-
-
         """
         server = host.RemoteHost(server_with_key)
         server.ssh_connect("root", "redhat")
@@ -211,15 +188,19 @@ nohup sh -c '
         imc.write("/work/redfish/certs/server.key", server.read_file("/root/.local-container-registry/domain.key"))
 
         imc.write("/work/scripts/pre_init_app.sh", script)
+        # WA: use idpf for ACC to IMC. Remove when we've moved to icc-net:
+        # https://issues.redhat.com/browse/IIC-485
         contents = "{\"init_app_acc_nboot_net_name\": \"enp0s1f0\"}"  # Soon, this will not be required anymore
+
+        # When developing / frequently re-deploying the ACC, we can update the watchdog timeout to avoid ending up in recovery mode
+        # https://issues.redhat.com/browse/IIC-369
+        acc_config = imc.read_file("/mnt/imc/acc_variable/acc-config.json")
+        imc.write("/mnt/imc/acc_variable/acc-config.json", acc_config.replace("\"acc_watchdog_timer\": 60", "\"acc_watchdog_timer\": 9999"))
+
         imc.write("/work/cfg/config.json", contents)
         imc.run("mkdir -m 0700 /work/redfish")
         imc.run("cp /etc/imc-redfish-configuration.json /work/redfish/")
         imc.run(f"echo {self.password} | bash /usr/bin/ipu-redfish-generate-password-hash.sh")
-
-        # WA: We need to manually install this file to enable networking with the fxp-net_linux-networking.pkg
-        imc.copy_to("./manifests/dpu/ipu_port1_setup.sh", "/work/scripts/ipu_port1_setup.sh")
-        imc.run("chmod +x /work/scripts/ipu_port1_setup.sh")
 
         imc.run("reboot")
         time.sleep(10)
@@ -315,8 +296,9 @@ nohup sh -c '
             logger.error(f"Request failed: {e}")
 
     def _redfish_available(self, url: str) -> bool:
+        full_url = f"https://{url}:8443/redfish/v1/Systems/1"
         try:
-            response = requests.get(url, auth=(self.user, self.password), verify=False)
+            response = requests.get(full_url, auth=(self.user, self.password), verify=False)
             response.raise_for_status()
             return True
         except requests.exceptions.RequestException:
@@ -388,7 +370,7 @@ nohup sh -c '
     def cold_boot(self) -> None:
         pass
 
-    def _version_via_redfish(self) -> str:
+    def _redfish_version(self) -> str:
         url = f"https://{self.url}:8443/redfish/v1/Managers/1"
         data = self._requests_get(url)
         fwversion = data.get("FirmwareVersion")
@@ -398,6 +380,15 @@ nohup sh -c '
         if not match:
             logger.error_and_exit("Failed to extract version")
         return match.group(1)
+
+    def _redfish_name(self) -> str:
+        print("Getting redfish name")
+        url = f"https://{self.url}:8443/redfish/v1/"
+        data = self._requests_get(url)
+        name = data.get("Name")
+        if not isinstance(name, str):
+            logger.error_and_exit("Failed to get Name")
+        return name
 
     def _version_via_ssh(self) -> Optional[str]:
         rh = host.RemoteHost(self.url)
@@ -410,12 +401,19 @@ nohup sh -c '
 
     def version(self) -> str:
         if self._redfish_available(self.url):
-            return self._version_via_redfish()
+            return self._redfish_version()
         else:
             fwversion = self._version_via_ssh()
             if not fwversion:
                 raise RuntimeError("Failed to detect imc version thourgh ssh")
             return fwversion
+
+    def is_ipu(self) -> bool:
+        logger.info(f"Checking if DPU is IPU via {self.url}")
+        if self._redfish_available(self.url):
+            return "Intel IPU" in self._redfish_name()
+        else:
+            return False
 
 
 def extract_server(url: str) -> str:

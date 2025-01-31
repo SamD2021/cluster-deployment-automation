@@ -11,9 +11,10 @@ from yaml import safe_load
 import host
 from logger import logger
 import common
+import clusterInfo
 from clusterInfo import ClusterInfo
-from clusterInfo import load_all_cluster_info
 from dataclasses import dataclass, field
+from bmc import BmcConfig
 
 
 @dataclass
@@ -58,6 +59,10 @@ class ExtraConfigArgs:
 
     base_image: str = ""
 
+    mev_version: str = ""
+
+    force_mev_fw_up: bool = False
+
     def pre_check(self) -> None:
         if self.sriov_network_operator_local:
             if self.name != "sriov_network_operator":
@@ -93,9 +98,8 @@ class NodeConfig:
     kind: str
     image_path: str = field(init=False)
     mac: str = field(default_factory=lambda: mac_generator.next_mac())
-    bmc: str = ""
-    bmc_user: str = "root"
-    bmc_password: str = "calvin"
+    bmc: Optional[BmcConfig] = None
+    bmc_host: Optional[BmcConfig] = None
     host_side_bmc: Optional[str] = None
     ip: Optional[str] = None
     preallocated: str = "true"
@@ -108,16 +112,16 @@ class NodeConfig:
     def __post_init__(self) -> None:
         # bmc ip is mandatory for physical, not for vm
         if self.kind == "physical" or self.kind == "bf" or self.kind == "ipu":
-            if self.bmc == "":
+            if self.bmc is None:
                 raise ValueError("NodeConfig: bmc not provided")
-        else:
-            delattr(self, "bmc")
-            delattr(self, "bmc_user")
-            delattr(self, "bmc_password")
 
         base_path = f'/home/{self.cluster_name}_guests_images'
         qemu_img_name = f'{self.name}.qcow2'
         self.image_path = os.path.join(base_path, qemu_img_name)
+
+        # TODO: fix this properly
+        if self.bmc is not None:
+            self.bmc = BmcConfig(**self.bmc)  # type: ignore
 
     def is_preallocated(self) -> bool:
         return self.preallocated == "true"
@@ -140,12 +144,6 @@ class BridgeConfig:
     ip: str
     mask: str
     dynamic_ip_range: Optional[tuple[str, str]] = None
-
-
-# Run the full hostname command
-def current_host() -> str:
-    lh = host.LocalHost()
-    return lh.run("hostname -f").out.strip()
 
 
 class ClustersConfig:
@@ -442,15 +440,15 @@ class ClustersConfig:
             assert self._cluster_info is not None
             return self._cluster_info.organization_id
 
-        def imc_hostname(a: int) -> str:
+        def bmc_hostname(a: int) -> str:
             self._ensure_clusters_loaded()
             assert self._cluster_info is not None
-            return self._cluster_info.bmc_imc_hostnames[a]
+            return self._cluster_info.bmc_hostname[a]
 
-        def ipu_mac_address(a: int) -> str:
+        def dpu_mac_address(a: int) -> str:
             self._ensure_clusters_loaded()
             assert self._cluster_info is not None
-            return self._cluster_info.ipu_mac_addresses[a]
+            return self._cluster_info.dpu_mac_addresses[a]
 
         format_string = contents
 
@@ -462,8 +460,8 @@ class ClustersConfig:
         template.globals['bmc'] = bmc
         template.globals['activation_key'] = activation_key
         template.globals['organization_id'] = organization_id
-        template.globals['IMC_hostname'] = imc_hostname
-        template.globals['IPU_mac_address'] = ipu_mac_address
+        template.globals['bmc_hostname'] = bmc_hostname
+        template.globals['DPU_mac_address'] = dpu_mac_address
 
         kwargs = {}
         kwargs["cluster_name"] = cluster_name
@@ -472,17 +470,8 @@ class ClustersConfig:
         return t
 
     def _ensure_clusters_loaded(self) -> None:
-        if self._cluster_info is not None:
-            return
-        all_cluster_info = load_all_cluster_info()
-        ch = current_host()
-        if ch in all_cluster_info:
-            self._cluster_info = all_cluster_info[ch]
-        elif ch.split(".")[0] in all_cluster_info:
-            self._cluster_info = all_cluster_info[ch.split(".")[0]]
-        else:
-            logger.error(f"Hostname {ch} not found in {all_cluster_info}")
-            sys.exit(-1)
+        if self._cluster_info is None:
+            self._cluster_info = clusterInfo.load_cluster_info()
 
     def all_nodes(self) -> list[NodeConfig]:
         return self.masters + self.workers
