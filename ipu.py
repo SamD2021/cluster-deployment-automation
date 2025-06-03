@@ -73,11 +73,10 @@ class IPUClusterNode(ClusterNode):
         logger.info("Waiting for ACC to come up")
         failures = 0
         # Typically if the acc booted properly it will take < 20 minutes to come
-        # up (including the 10 min sleep we do during boot)
-        t = timer.Timer("10m")
+        t = timer.Timer("20m")
         while True:
             if acc.ping():
-                logger.info("ACC responded to ping, connecting")
+                logger.info(f"ACC responded to ping after {t}, connecting")
                 break
             if t.triggered():
                 logger.info("ACC has not responded in a reasonable amount of time")
@@ -101,8 +100,17 @@ class IPUClusterNode(ClusterNode):
         ipu_bmc = IPUBMC(self.config.bmc)
         if ipu_bmc.version() != "1.8.0" and ipu_bmc.version() != "2.0.0":
             logger.error_and_exit(f"Unexpected version {ipu_bmc.version()}, should be 1.8.0 or 2.0.0")
+        if self.recovery_mode():
+            logger.error_and_exit("IPU is in recovery mode, exiting")
+
         self._boot_iso(iso_or_image_path)
         return True
+
+    def recovery_mode(self) -> bool:
+        assert self.config.bmc is not None
+        imc = host.RemoteHost(self.config.bmc.url)
+        imc.ssh_connect(self.config.bmc.user, self.config.bmc.password)
+        return "ipu-recovery" in imc.run("cat /etc/hostname").out
 
     def has_booted(self) -> bool:
         return True
@@ -145,11 +153,13 @@ class IPUClusterNode(ClusterNode):
         logger.info("Waiting until ssh is up on ACC")
         cmd = 'ssh -o StrictHostKeyChecking=no -o PubkeyAuthentication=no -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o ChallengeResponseAuthentication=no 192.168.0.2 2>&1 | grep "Permission denied"'
         timeout_timer = timer.Timer("25m")
-        for tries in itertools.count(0):
+        while True:
             ret = imc.run(cmd)
             if ret.returncode == 0:
-                logger.info(f"Connected to ACC through IMC after {tries} tries")
+                logger.info(f"Connected to ACC through IMC after {timeout_timer}")
                 break
+            if self.recovery_mode():
+                logger.error_and_exit("IPU is in recovery mode while waiting for ACC to come up after {timeout_timer}")
             time.sleep(1)
             if timeout_timer.triggered():
                 logger.error_and_exit(f"Waited for {timeout_timer.elapsed()} but ACC wasn't reachable through IMC")
