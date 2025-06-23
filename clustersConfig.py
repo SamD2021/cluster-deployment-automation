@@ -16,6 +16,7 @@ import clusterInfo
 from clusterInfo import ClusterInfo
 from dataclasses import dataclass, field
 from bmc import BmcConfig
+from imageRegistry import RegistryType
 
 
 def base_iso_path(cluster_name: str) -> str:
@@ -86,6 +87,7 @@ class ExtraConfigArgs:
 
     registries: Optional[list[RegistryInfo]] = None
     import_pull_secret: bool = False
+    registry_type: str = RegistryType.IN_CLUSTER.value
 
     def __post_init__(self) -> None:
         if self.registries is not None:

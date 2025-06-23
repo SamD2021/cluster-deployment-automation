@@ -375,6 +375,10 @@ class ClusterDeployer(BaseDeployer):
 
         self.update_dnsmasq()
 
+        logger.info("Deploying In-Cluster Registry")
+        icr = InClusterRegistry(kubeconfig=self._cc.kubeconfig)
+        icr.deploy()
+
     def create_workers(self) -> None:
         if len(self._cc.workers) == 0:
             logger.info("No workers to setup")
@@ -446,10 +450,6 @@ class ClusterDeployer(BaseDeployer):
         for h in hosts_with_workers:
             for worker in h.k8s_worker_nodes:
                 worker.set_password()
-
-        logger.info("Deploying In-Cluster Registry")
-        icr = InClusterRegistry(self._cc.kubeconfig)
-        icr.deploy()
 
     def _wait_master_reboot(self, infra_env: str, node: ClusterNode) -> bool:
         def master_ready(ai: AssistedClientAutomation, node_name: str) -> bool:
