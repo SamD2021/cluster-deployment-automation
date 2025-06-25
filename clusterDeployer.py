@@ -466,7 +466,49 @@ class ClusterDeployer(BaseDeployer):
             return True
 
         logger.error(f"Master {name} reboot failed")
+        self._capture_failure_logs(node, infra_env)
         return False
+
+    def _capture_failure_logs(self, node: ClusterNode, infra_env: str) -> None:
+        """Capture comprehensive logs when a master fails to boot"""
+        logger.error(f"Capturing failure logs for {node.config.name}")
+
+        self._capture_node_failure_logs(node, infra_env)
+        self._capture_assisted_installer_logs()
+        self._capture_ai_status_logs(node)
+
+    def _capture_node_failure_logs(self, node: ClusterNode, infra_env: str) -> None:
+        """Capture node failure logs"""
+        logger.error(f"Capturing node logs for {node.config.name}")
+        try:
+            node.print_logs()
+        except Exception as e:
+            logger.error(f"Failed to capture node logs: {e}")
+
+    def _capture_assisted_installer_logs(self) -> None:
+        """Capture assisted installer service logs from podman container"""
+        logger.error("Capturing assisted installer service logs")
+        try:
+            lh = host.LocalHost()
+            # Get container logs from the assisted-installer pod
+            result = lh.run("podman logs assisted-installer")
+            if result.success():
+                logger.error(f"Assisted installer service logs:\n{result.out}")
+            else:
+                logger.error(f"Failed to get assisted installer logs: {result.err}")
+        except Exception as e:
+            logger.error(f"Failed to capture assisted installer logs: {e}")
+
+    def _capture_ai_status_logs(self, node: ClusterNode) -> None:
+        """Capture cluster and host status from AI API"""
+        logger.error("Capturing AI cluster and host status")
+        try:
+            cluster_info = self._ai.get_ai_cluster_info(self._cc.name)
+            host_info = self._ai.get_ai_host(node.config.name)
+            logger.error(f"Cluster status: {cluster_info}")
+            logger.error(f"Host status: {host_info}")
+        except Exception as e:
+            logger.error(f"Failed to capture AI status: {e}")
 
     def _install_worker_with_retry(self, infra_env: str, node: ClusterNode) -> bool:
         def installation_finished(ai: AssistedClientAutomation, node_name: str) -> bool:
