@@ -13,6 +13,7 @@ from enum import Enum
 import urllib.request
 import urllib.error
 import ssl
+from clusterStorage import ClusterStorage
 
 CONTAINER_NAME = "local-container-registry"
 
@@ -198,6 +199,7 @@ class InClusterRegistry(BaseRegistry):
     def __init__(
         self,
         kubeconfig: str,
+        storage_class: str,
         allow_external_access: bool = True,
         namespace: str = "in-cluster-registry",
         sa: str = "pusher",
@@ -207,6 +209,7 @@ class InClusterRegistry(BaseRegistry):
         self.allow_external = allow_external_access
         self.namespace = namespace
         self.sa = sa
+        self.storage_class = storage_class
         self.client = k8sClient.K8sClient(self.kubeconfig, self.host)
 
     def deploy(self) -> None:
@@ -257,10 +260,24 @@ class InClusterRegistry(BaseRegistry):
         self.client.oc_run_or_die("patch configs.imageregistry.operator.openshift.io cluster --type=merge --patch '{\"spec\":{\"managementState\":\"Managed\"}}'")
         self.client.oc_run_or_die("wait --for=jsonpath='{.spec.managementState}'=Managed configs.imageregistry.operator.openshift.io/cluster --timeout=5m")
 
-        # Configure storage with emptyDir and wait for it to be applied
-        logger.info("Configuring registry storage with emptyDir")
-        self.client.oc_run_or_die("patch configs.imageregistry.operator.openshift.io cluster --type=merge --patch '{\"spec\":{\"storage\":{\"emptyDir\":{}}}}'")
-        self.client.oc_run_or_die("wait --for=jsonpath='{.spec.storage.emptyDir}' configs.imageregistry.operator.openshift.io/cluster --timeout=5m")
+        # Configure registry to use the pre-created PVC (created in clusterDeployer.py)
+        logger.info(f"Configuring registry to use existing PVC with storage class: {self.storage_class}")
+
+        # Check if PVC already exists - it should have been created by clusterDeployer.py
+        pvc_check = self.client.oc("get pvc registry-storage -n openshift-image-registry")
+        if not pvc_check.success():
+            logger.warning("PVC registry-storage not found, creating it now (should have been created earlier)")
+            storage = ClusterStorage(self.kubeconfig)
+            storage.ensure_registry_pvc_created(storage_size="10Gi")
+
+        # Configure the registry to use this PVC
+        storage_patch = '{"spec":{"storage":{"pvc":{"claim":"registry-storage"}}}}'
+        self.client.oc_run_or_die(f"patch configs.imageregistry.operator.openshift.io cluster --type=merge --patch '{storage_patch}'")
+        self.client.oc_run_or_die("wait --for=jsonpath='{.spec.storage.pvc}' configs.imageregistry.operator.openshift.io/cluster --timeout=5m")
+
+        # Ensure PVC binding is handled properly after configuration
+        storage = ClusterStorage(self.kubeconfig)
+        storage.ensure_pvc_binding_after_registry_config()
 
         # Configure default route if external access is allowed
         if self.allow_external:
@@ -270,7 +287,7 @@ class InClusterRegistry(BaseRegistry):
 
         # Wait for the registry to be ready
         logger.info("Waiting for registry to be ready")
-        self.client.oc_run_or_die("wait --for=jsonpath='{.status.readyReplicas}'=1 configs.imageregistry.operator.openshift.io/cluster --timeout=15m")
+        self.client.oc_run_or_die("wait --for=jsonpath='{.status.readyReplicas}'=1 configs.imageregistry.operator.openshift.io/cluster --timeout=5m")
 
     def _ensure_project_and_sa(self) -> None:
         # We want to create an orginization (similar to quay.io) and credentials to push and pull from externally

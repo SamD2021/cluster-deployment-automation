@@ -28,6 +28,7 @@ from libvirt import Libvirt
 from baseDeployer import BaseDeployer
 from state_file import StateFile
 from imageRegistry import InClusterRegistry
+from clusterStorage import ClusterStorage
 
 
 def match_to_proper_version_format(version_cluster_config: str) -> str:
@@ -447,8 +448,21 @@ class ClusterDeployer(BaseDeployer):
             for worker in h.k8s_worker_nodes:
                 worker.set_password()
 
-        logger.info("Deploying In-Cluster Registry")
-        icr = InClusterRegistry(self._cc.kubeconfig)
+        logger.info("Deploying storage for registry")
+
+        # Deploy Openshift Data Foundation (ODF) storage for registry to keep storage on worker nodes
+        storage = ClusterStorage(self._cc.kubeconfig)
+        storage.deploy_storage()
+
+        # Create the registry PVC before configuring the registry
+        logger.info("Creating registry PVC before configuring the in-cluster registry")
+        storage.ensure_registry_pvc_created(storage_size="10Gi")
+
+        # Get storage class for registry
+        storage_class_name = storage.get_storage_class_name()
+
+        logger.info("Deploying In-Cluster Registry with persistent storage")
+        icr = InClusterRegistry(self._cc.kubeconfig, storage_class=storage_class_name)
         icr.deploy()
 
     def _wait_master_reboot(self, infra_env: str, node: ClusterNode) -> bool:
