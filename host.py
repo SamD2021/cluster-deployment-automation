@@ -557,3 +557,164 @@ def LocalHost() -> Host:
 
 def RemoteHost(ip: str) -> Host:
     return Host(ip)
+
+""" 
+class ContainerHost(Host):
+    # TODO: This is not used anywhere, but we should keep it around for now
+
+    def __new__(cls, container_name: str, container_runtime: str = "podman") -> 'ContainerHost':
+        # Bypass Host's singleton pattern for containers
+        return object.__new__(cls)
+
+    def __init__(self, container_name: str, container_runtime: str = "podman") -> None:
+        # Don't call super().__init__() to avoid singleton conflicts
+        # Set required attributes that Host.__init__ would set
+        self._hostname = container_name
+        self._bmc = None
+        self._logins: list[Login] = []
+        self.sudo_needed = False
+
+        # Container-specific attributes
+        self.container_name = container_name
+        self.container_runtime = container_runtime
+        self._host = Host("localhost")
+
+    def run(self, cmd: str, log_level: int = logging.DEBUG, env: dict[str, str] = os.environ.copy(), quiet: bool = False) -> Result:
+        full_cmd = f"{self.container_runtime} exec {self.container_name} {cmd}"
+        result: Result = self._host.run(full_cmd, log_level, env, quiet)
+        return result
+
+    def run_or_die(self, cmd: str, retry: int = 1) -> Result:
+        result = self.run(cmd)
+        if not result.success():
+            logger.error_and_exit(f"Command failed in container {self.container_name}: {cmd}")
+        return result
+
+    def write(self, fn: str, contents: str, encoding: str = 'utf-8') -> None:
+        write_cmd = f'{self.container_runtime} exec {self.container_name} bash -c \'cat > "{fn}" << "EOF"\n{contents}\nEOF\''
+        self._host.run_or_die(write_cmd)
+
+    def read_file(self, file_name: str) -> str:
+        read_cmd = f'{self.container_runtime} exec {self.container_name} cat "{file_name}"'
+        result = self._host.run(read_cmd)
+        if not result.success():
+            raise FileNotFoundError(f"File {file_name} not found in container {self.container_name}")
+        return str(result.out)
+
+    def copy_to(self, src_file: str, dst_file: str) -> None:
+        copy_cmd = f"{self.container_runtime} cp {src_file} {self.container_name}:{dst_file}"
+        self._host.run_or_die(copy_cmd)
+
+    def copy_from(self, src_file: str, dst_file: str) -> None:
+        copy_cmd = f"{self.container_runtime} cp {self.container_name}:{src_file} {dst_file}"
+        self._host.run_or_die(copy_cmd)
+
+    def hostname(self) -> str:
+        result = self.run("hostname")
+        if result.success():
+            return result.out.strip()
+        else:
+            return self.container_name
+
+    def exists(self, path: str) -> bool:
+        return self.run(f"stat {path}", logging.DEBUG).returncode == 0
+
+    def listdir(self, path: Optional[str] = None) -> list[str]:
+        path = path if path is not None else ""
+        ret = self.run(f"ls {path}")
+        if ret.returncode == 0:
+            return ret.out.strip().split("\n")
+        raise Exception(f"Error listing dir {path}")
+
+    def remove(self, source: str) -> None:
+        self.run(f"rm -f {source}")
+
+    def home_dir(self, *path_components: str) -> str:
+        ret = self.run("bash -c 'echo -n ~'")
+        path = ret.out
+        if not ret.success() or not path or path[0] != "/":
+            raise RuntimeError("Failure getting home directory")
+        if path_components:
+            path = os.path.join(path, *path_components)
+        return path
+
+    @lru_cache(maxsize=None)
+    def is_localhost(self) -> bool:
+        return False  # Container is never localhost
+
+    def ping(self) -> bool:
+        # Check if container is running
+        check_cmd = f"{self.container_runtime} inspect {self.container_name} --format '{{{{.State.Running}}}}'"
+        result = self._host.run(check_cmd)
+        return result.success() and str(result.out).strip() == "true"
+
+    def get_container_ip(self) -> str:
+        result = self.run("hostname -I")
+        if result.success():
+            return result.out.strip().split()[0]
+        else:
+            inspect_cmd = f"{self.container_runtime} inspect {self.container_name} --format '{{{{.NetworkSettings.IPAddress}}}}'"
+            result = self._host.run(inspect_cmd)
+            return result.out.strip() if result.success() else "127.0.0.1"
+
+    # Methods that don't make sense for containers - override to prevent issues
+    def ssh_connect(self, username: str, password: Optional[str] = None, *, discover_auth: bool = True, rsa_path: str = default_id_rsa_path(), ed25519_path: str = default_ed25519_path(), timeout: str = "1h") -> None:
+        # For containers, "ssh_connect" means exec into the container
+        # We don't need to do anything special here since all our methods already exec into the container
+        # Just verify the container is running
+        if not self.ping():
+            raise ConnectionError(f"Container {self.container_name} is not running")
+
+    def close(self) -> None:
+        # Nothing to close for containers
+        pass
+
+    def boot_iso_redfish(self, iso_path: str) -> None:
+        raise NotImplementedError("boot_iso_redfish is not supported for containers")
+
+    def stop(self) -> None:
+        self._host.run(f"{self.container_runtime} stop {self.container_name}")
+
+    def start(self) -> None:
+        self._host.run(f"{self.container_runtime} start {self.container_name}")
+
+    def cold_boot(self) -> None:
+        self.stop()
+        self.start()
+
+    def wait_ping(self) -> None:
+        # Wait for container to be running
+        t = timer.Timer("1h")
+        while not self.ping():
+            if t.triggered():
+                logger.error_and_exit(f"Waited for 1h for container {self.container_name} to be running")
+        logger.info(f"Waited for {t.elapsed()} for {self.container_name} to be running")
+
+
+def find_minc_container() -> str:
+    # TODO: This is not used anywhere, but we should keep it around for now
+    # Look for containers with microshift in the name
+    result = LocalHost().run("podman ps --format '{{.Names}}' | grep -i microshift")
+    if result.success():
+        containers = result.out.strip().split('\n')
+        if len(containers) == 1:
+            return containers[0]
+        else:
+            # If multiple containers, try to find the one running microshift
+            for container in containers:
+                # Check if this container is running microshift
+                check_cmd = f"podman exec {container} systemctl is-active microshift"
+                if LocalHost().run(check_cmd).success():
+                    return container
+            # Fall back to first one if we can't determine
+            return containers[0]
+    else:
+        raise RuntimeError("Could not find MINC container")
+
+
+def MincHost(container_name: Optional[str] = None) -> ContainerHost:
+    # TODO: This is not used anywhere, but we should keep it around for now
+    if container_name is None:
+        container_name = find_minc_container()
+    return ContainerHost(container_name)
+ """

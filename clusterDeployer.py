@@ -394,10 +394,7 @@ class ClusterDeployer(BaseDeployer):
         if not hostpath_storage:
             logger.error_and_exit("Expected HostPathStorage implementation for registry storage")
 
-        # Create persistent volume for registry storage
-        logger.info("Creating persistent volume for registry storage...")
         registry_storage_size = self._cc.get_registry_storage_node().in_cluster_registry_storage_size
-        hostpath_storage.create_pv_with_node_affinity(pv_name="registry-pv", storage_size=registry_storage_size, storage_path="/var/lib/registry-storage")
 
         # Get storage class for applications
         storage_class_name = storage.get_storage_class_name()
