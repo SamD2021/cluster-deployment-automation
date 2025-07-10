@@ -12,7 +12,7 @@ import json
 def ExtraConfigHostRegistry(cc: ClustersConfig, cfg: ExtraConfigArgs, futures: dict[str, Future[Optional[host.Result]]]) -> None:
     [f.result() for (_, f) in futures.items()]
 
-    auth_path = "/run/user/0/containers/auth.json"
+    auth_path = cfg.registries[0].auth_path if cfg.registries else "/run/user/0/containers/auth.json"
 
     # Load existing data
     if os.path.exists(auth_path):

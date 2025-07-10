@@ -1,0 +1,16 @@
+GitPython
+aicli
+PyYAML
+requests
+setuptools-rust
+wheel
+paramiko==2.12.0
+tenacity
+gspread
+oauth2client
+jinja2
+kubernetes
+python-hosts
+pydantic
+argcomplete
+yq

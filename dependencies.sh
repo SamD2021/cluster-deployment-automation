@@ -2,23 +2,22 @@
 
 set -e
 
-if [ "$(which python)" = "$(pwd)/ocp-venv/bin/python" ]; then
-    PYTHON_CMD="python"
-else
-    PYTHON_CMD="python3.11"
-    # Install Python 3.11 if not using the virtual environment interpreter
-    sudo dnf install -y python3.11
-fi
+# if [ "$(which python)" = "$(pwd)/ocp-venv/bin/python" ]; then
+# PYTHON_CMD="python"
+# else
+#     PYTHON_CMD="python3.11"
+#     # Install Python 3.11 if not using the virtual environment interpreter
+#     sudo dnf install -y python3.11
+# fi
 
-$PYTHON_CMD -m ensurepip --upgrade
-$PYTHON_CMD -m pip install PyYAML --ignore-installed
+# $PYTHON_CMD -m ensurepip --upgrade
+# $PYTHON_CMD -m pip install PyYAML --ignore-installed
 
 dnf install -y \
         bash-completion \
         cockpit-composer \
         composer-cli \
         coreos-installer \
-        dhcp-server \
         dnsmasq \
         firewalld \
         git \
@@ -37,10 +36,10 @@ dnf install -y \
 
 systemctl enable osbuild-composer.socket cockpit.socket --now
 
-cat requirements.txt  | xargs -n1 $PYTHON_CMD -m pip install
+# cat requirements.txt  | xargs -n1 $PYTHON_CMD -m pip install
 
-export PYTHON_CMD_FULL=$(which $PYTHON_CMD)
-sudo -E $PYTHON_CMD_FULL $(which activate-global-python-argcomplete)
+# export PYTHON_CMD_FULL=$(which $PYTHON_CMD)
+# sudo -E $PYTHON_CMD_FULL $(which activate-global-python-argcomplete)
 
 oc_url="https://mirror.openshift.com/pub/openshift-v4/$(uname -m)/clients/ocp/stable/openshift-client-linux.tar.gz"
 curl -L "$oc_url" -o /tmp/openshift-client-linux.tar.gz

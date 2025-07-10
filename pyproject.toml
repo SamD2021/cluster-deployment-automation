@@ -1,3 +1,37 @@
+[project]
+name = "cluster-deployment-automation"
+version = "0.1.0"
+description = "Automate deployment of OpenShift clusters in different configurations"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "GitPython",
+    "aicli",
+    "PyYAML",
+    "requests",
+    "setuptools-rust",
+    "wheel",
+    "paramiko==2.12.0",
+    "tenacity",
+    "gspread",
+    "oauth2client",
+    "jinja2",
+    "kubernetes",
+    "python-hosts",
+    "pydantic",
+    "argcomplete",
+    "yq",
+]
+
+[tool.setuptools]
+packages = []
+
+[tool.setuptools.package-dir]
+"" = "."
+
+[tool.uv]
+dev-dependencies = []
+
 [tool.black]
 line-length = 250
 skip-string-normalization = 1
