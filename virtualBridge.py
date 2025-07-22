@@ -6,12 +6,14 @@ import json
 from typing import Optional
 import xml.etree.ElementTree as et
 from pathlib import Path
+import keaConfig
 from logger import logger
 
 import common
 import host
 from clustersConfig import BridgeConfig, NodeConfig
 from libvirt import Libvirt
+import dhcpConfig
 
 
 def bridge_dhcp_range_str(dhcp_range: Optional[tuple[str, str]]) -> str:
@@ -101,41 +103,46 @@ class VirBridge:
             logger.info(f'Cleaning up {fn}')
             logger.info(f'removing hosts with mac in {removed_macs} or name in {names}')
             filtered = filter_dhcp_leases(j, removed_macs, names)
-            result = self.hostconn.run("virsh net-destroy default")
-            logger.info(f"Delete \"default\" Libvirt network: {result}")
+            
+            # Coordinate with Kea DHCP to avoid port conflicts during network restart
+            with keaConfig.kea_paused():
+                result = self.hostconn.run("virsh net-destroy default")
+                logger.info(f"Delete \"default\" Libvirt network: {result}")
 
-            with p.open("w") as f:
-                f.write(json.dumps(filtered, indent=4))
-            result = self.hostconn.run("virsh net-start default")
-            logger.info(f"Start \"default\" Libvirt network: {result}")
-            self.libvirt.restart("qemu")
+                with p.open("w") as f:
+                    f.write(json.dumps(filtered, indent=4))
+                result = self.hostconn.run("virsh net-start default")
+                logger.info(f"Start \"default\" Libvirt network: {result}")
+                self.libvirt.restart("qemu")
 
     def _ensure_started(self, bridge_xml: str, api_port: Optional[str]) -> None:
-        cmd = "virsh net-destroy default"
-        self.hostconn.run(cmd)  # ignore return code - it might fail if net was not started
+        # Coordinate with Kea DHCP to avoid port conflicts
+        with keaConfig.kea_paused():
+            cmd = "virsh net-destroy default"
+            self.hostconn.run(cmd)  # ignore return code - it might fail if net was not started
 
-        cmd = "virsh net-undefine default"
-        ret = self.hostconn.run(cmd)
-        if ret.returncode != 0 and "Network not found" not in ret.err:
-            logger.error_and_exit(str(ret))
+            cmd = "virsh net-undefine default"
+            ret = self.hostconn.run(cmd)
+            if ret.returncode != 0 and "Network not found" not in ret.err:
+                logger.error_and_exit(str(ret))
 
-        # Fix cases where virsh net-start fails with error "... interface virbr0: File exists"
-        cmd = "ip link delete virbr0"
-        self.hostconn.run(cmd)  # ignore return code - it might fail if virbr did not exist
+            # Fix cases where virsh net-start fails with error "... interface virbr0: File exists"
+            cmd = "ip link delete virbr0"
+            self.hostconn.run(cmd)  # ignore return code - it might fail if virbr did not exist
 
-        cmd = f"virsh net-define {bridge_xml}"
-        self.hostconn.run_or_die(cmd)
+            cmd = f"virsh net-define {bridge_xml}"
+            self.hostconn.run_or_die(cmd)
 
-        if api_port is not None:
-            # set interface down before starting bridge as otherwise bridge start might fail if interface
-            # already got an IP address in same network as bridge
-            self.hostconn.run(f"ip link set {api_port} down")
+            if api_port is not None:
+                # set interface down before starting bridge as otherwise bridge start might fail if interface
+                # already got an IP address in same network as bridge
+                self.hostconn.run(f"ip link set {api_port} down")
 
-        cmd = "virsh net-start default"
-        self.hostconn.run_or_die(cmd)
+            cmd = "virsh net-start default"
+            self.hostconn.run_or_die(cmd)
 
-        if api_port is not None:
-            self.hostconn.run(f"ip link set {api_port} up")
+            if api_port is not None:
+                self.hostconn.run(f"ip link set {api_port} up")
 
     def _network_xml(self) -> str:
         if self.config.dynamic_ip_range is None:
@@ -146,10 +153,11 @@ class VirBridge:
                 </dhcp>"""
 
         return f"""
-                <network>
+                <network xmlns:dnsmasq="http://libvirt.org/schemas/network/dnsmasq/1.0">
                 <name>default</name>
                 <forward mode='nat'/>
                 <bridge name='virbr0' stp='off' delay='0'/>
+                <dnsmasq:option value="bind-interfaces"/>
                 {bridge_ip_address_str(self.config.ip, self.config.mask)}
                 {dhcp_part}
                 </ip>
@@ -216,20 +224,33 @@ class VirBridge:
         # losing existing bridge config.
 
         # We can't modify the dhcp range, but we can delete/add it back. First delete it.
+        # Coordinate with Kea DHCP to avoid port conflicts during network updates
         range_elem = None
         xml_str = ""
         if expected_dhcp_range not in ret.out:
-            tree = et.fromstring(ret.out)
-            range_elem = next((it for it in tree.iter('range')), et.Element(''))
-            for attr in range_elem.attrib:
-                xml_str = xml_str + f"{attr}='{range_elem.attrib[attr]}' "
-            if range_elem.tag:
-                xml_str = f"\"<range {xml_str}/>\""
-                cmd = f"virsh net-update default delete ip-dhcp-range {xml_str} --live --config"
-                self.hostconn.run(cmd)
+            with keaConfig.kea_paused():
+                tree = et.fromstring(ret.out)
+                range_elem = next((it for it in tree.iter('range')), et.Element(''))
+                for attr in range_elem.attrib:
+                    xml_str = xml_str + f"{attr}='{range_elem.attrib[attr]}' "
+                if range_elem.tag:
+                    xml_str = f"\"<range {xml_str}/>\""
+                    cmd = f"virsh net-update default delete ip-dhcp-range {xml_str} --live --config"
+                    delete_result = self.hostconn.run(cmd)
+                    if delete_result.returncode != 0:
+                        logger.debug(f"Failed to delete existing DHCP range (may not exist): {delete_result.err}")
 
-            cmd = f"virsh net-update default add ip-dhcp-range \"{expected_dhcp_range}\" --live --config"
-            self.hostconn.run_or_die(cmd)
+                cmd = f"virsh net-update default add ip-dhcp-range \"{expected_dhcp_range}\" --live --config"
+                result = self.hostconn.run(cmd)
+                if result.returncode != 0:
+                    if "existing dhcp range entry" in result.err:
+                        logger.info("DHCP range already exists in libvirt network, skipping add operation")
+                    else:
+                        # Only fail if it's not a "range already exists" error
+                        logger.error(f"Failed to add DHCP range: {result.err}")
+                        logger.error_and_exit(f"virsh net-update failed: {result.err}")
+                else:
+                    logger.debug(f"Successfully added DHCP range: {expected_dhcp_range}")
 
     def eth_address(self) -> str:
         max_tries = 3

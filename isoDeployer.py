@@ -85,7 +85,7 @@ class IsoDeployer(BaseDeployer):
         assert self._master.ip is not None
         gw = common.ip_to_gateway(self._master.ip, "255.255.255.0")
         self.configure_iso_network_port(self._cc.network_api_port, gw)
-        dhcpConfig.configure_dhcpd(self._master)
+        dhcpConfig.configure_dhcpd(self._master, self._cc.network_api_port)
 
     def configure_iso_network_port(self, api_port: str, gateway_ip: str) -> None:
         lh = host.LocalHost()

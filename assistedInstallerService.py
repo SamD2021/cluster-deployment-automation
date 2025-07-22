@@ -10,9 +10,11 @@ from typing import IO
 import yaml
 import requests
 from requests import get as get_url
+import keaConfig
 from logger import logger
 import host
 import common
+import dhcpConfig  # For Kea coordination
 from libvirt import Libvirt
 import tempfile
 import hashlib
@@ -491,8 +493,13 @@ class AssistedInstallerService:
             logger.info("Can't find virbr0. Trying to restart libvirt.")
             libvirt = Libvirt(lh)
             libvirt.configure()
-            cmd = "virsh net-start default"
-            lh.run(cmd)
+            
+            # Coordinate with Kea DHCP to avoid port conflicts
+            with keaConfig.kea_paused():
+                cmd = "virsh net-start default"
+                result = lh.run(cmd)
+                if result.returncode != 0:
+                    logger.warning(f"Failed to start libvirt default network: {result.err}")
 
             # Not sure whether or why this is needed. But we've seen failures w/o this.
             # Need to find out if/how we can remove this to speed up.

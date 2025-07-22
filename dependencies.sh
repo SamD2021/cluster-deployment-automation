@@ -32,7 +32,8 @@ dnf install -y \
         rust \
         virt-install \
         virt-viewer \
-        wget
+        wget \
+        kea
 
 systemctl enable osbuild-composer.socket cockpit.socket --now
 

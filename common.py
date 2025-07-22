@@ -466,6 +466,32 @@ def port_to_ip(host: host.Host, port_name: str) -> Optional[str]:
     return None
 
 
+def resolve_hostname_to_ips(hostname: str, max_ips: int = 2) -> list[str]:
+    """
+    Resolve hostname to IP addresses. Returns list of IP addresses.
+    
+    Args:
+        hostname: The hostname to resolve
+        max_ips: Maximum number of IP addresses to return (default: 2)
+        
+    Returns:
+        List of IPv4 addresses resolved from the hostname
+        
+    Raises:
+        SystemExit: If hostname resolution fails
+    """
+    try:
+        # Try to resolve the hostname to IPv4 addresses
+        result = socket.getaddrinfo(hostname, None, socket.AF_INET)
+        ip_addresses = list(set(info[4][0] for info in result))
+        if ip_addresses:
+            return ip_addresses[:max_ips]
+        else:
+            logger.error_and_exit(f"No IP addresses found for hostname '{hostname}'")
+    except (socket.gaierror, socket.herror) as e:
+        logger.error_and_exit(f"Failed to resolve hostname '{hostname}': {e}")
+
+
 def get_auto_port(host: host.Host) -> str:
     def ipa_is_candidate(ipa: IPRouteAddressEntry) -> bool:
         if not ipa.has_carrier():
