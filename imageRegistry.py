@@ -274,6 +274,7 @@ class InClusterRegistry(BaseRegistry):
         self._ensure_project_and_sa()
         self._grant_roles()
         self.podman_authenticate()
+        self._ensure_test_images_in_registry()
 
     def undeploy(self) -> None:
         """Undeploy the in-cluster registry, restoring to OpenShift defaults"""
@@ -610,6 +611,12 @@ spec:
 
         logger.info("Router configured successfully for CI workloads")
 
+    def _ensure_test_images_in_registry(self) -> None:
+        """Ensure test images are in both registries"""
+        logger.info("Ensuring test images are in both registries...")
+        registry = self.get_url() + "/in-cluster-registry"
+        self.host.run_or_die(f"skopeo copy docker://ghcr.io/ovn-kubernetes/kubernetes-traffic-flow-tests:latest docker://{registry}/kubernetes-traffic-flow-tests:latest")
+
 
 def trust_certificates(host_obj: host.Host, certs: dict[str, str]) -> None:
     """
@@ -690,6 +697,7 @@ class MicroshiftRegistry(InClusterRegistry):
 
         logger.info("MicroShift registry deployment completed successfully!")
         self._show_registry_info()
+        self._ensure_test_images_in_registry()
 
     def _ensure_namespace_exists(self) -> None:
         """Ensure the openshift-image-registry namespace exists, creating it if necessary"""
